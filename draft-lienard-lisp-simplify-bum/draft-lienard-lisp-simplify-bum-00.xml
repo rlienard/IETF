@@ -1,0 +1,422 @@
+<?xml version="1.0" encoding="utf-8"?>
+<?xml-model href="rfc7991bis.rnc"?>
+<?xml-stylesheet type="text/xsl" href="rfc2629.xslt" ?>
+
+<!DOCTYPE rfc [
+  <!ENTITY nbsp    "&#160;">
+  <!ENTITY zwsp   "&#8203;">
+  <!ENTITY nbhy   "&#8209;">
+  <!ENTITY wj     "&#8288;">
+]>
+
+<rfc
+  xmlns:xi="http://www.w3.org/2001/XInclude"
+  category="exp"
+  docName="draft-lienard-lisp-simplify-bum-00"
+  ipr="trust200902"
+  obsoletes=""
+  updates=""
+  submissionType="IETF"
+  xml:lang="en"
+  version="3">
+
+  <front>
+    <title abbrev="Simplifying BUM forwarding">Simplifying BUM forwarding in LISP based VxLAN fabrics</title>
+
+    <seriesInfo name="Internet-Draft" value="draft-lienard-lisp-simplify-bum-00"/>
+   
+    <author fullname="Raphael Lienard" initials="R." role="editor" surname="Lienard">
+      <organization>Cisco Systems</organization>
+      <address>
+        <postal>
+          <street>170 Tasman Drive</street>
+          <city>San Jose</city>
+          <region>CA</region>
+          <code>95134</code>
+          <country>United States of America</country>
+        </postal>        
+        <email>rlienard@cisco.com</email>
+      </address>
+    </author>
+   
+    <date year="2026" month="1" day="27"/>
+
+    <area>Internet</area>
+    <workgroup>Network Working Group</workgroup>
+    <keyword>LISP; deployment</keyword>
+
+    <abstract>
+      <t>In a Locator/ID Separation Protocol (LISP) network where 
+      EID Layer 2 mobility is enabled between RLOCs as per defined
+      in <xref target="I-D.ietf-lisp-eid-mobility"/>, the forwarding of
+      overlay Broadcast, Unknown unicast, and link-local Multicast
+      (BUM) traffic is achieved either by sending an encapsulated
+      unicast copy of the packets to all interested RLOCs or by 
+      sending an encapsulated multicast packet to the provider 
+      network and letting it do the replication as close as possible
+      to the destination RLOCs.</t>
+
+      <t>When using multicast replication, <xref target="I-D.ietf-lisp-eid-mobility"/>
+      relies on Protocol Independent Multicast - Any Source Multicast
+      (PIM ASM) and the use of Rendezvous Points (RPs) within the
+      provider network to discover RLOC participation to a L2VNI.</t>
+      
+      <t>The role of the underlay is to provide a robust and stable transport
+      network that is configured once and rarely touched afterwards.
+      Importanty, it should be independent from any overlay networks
+      that are dynamic by nature. Although as explained above, there
+      is currently a direct dependency between one or several 
+      underlaying PIM RP(s) and Layer 2 overlay networks supporting BUM.
+      This defeats the principle of isolation.</t>
+
+      <t>This document describes an different approach for BUM traffic
+      handling within LISP networks by utilising PIM Source-Specific
+      Multicast (SSM) instead of PIM ASM in the provider networks 
+      and integrating L2VNI RLOC membership discovery directly into
+      the LISP control plane. The outlined approach eliminates the
+      need for RPs in provider networks and allow the overlay protocol
+      LISP to shape the required underlay PIM SSM multicast trees.</t>
+      
+      <t>This method ensure dynamic native multicast tree formation
+      based on overlay need, reduces the configuration and troubleshooting
+      burden on network administrators, ensuring more resilient and streamlined
+      BUM traffic forwarding within layer 2 LISP fabrics.</t>
+    </abstract>
+  </front>
+
+  <middle>
+    <section anchor="Introduction">
+      <name>Introduction</name>
+        <t>The Locator/ID Separation Protocol (LISP) has been instrumental in
+        advancing the capabilities of network fabrics by separating endpoint
+        identifiers and their location within the network infrastructure.
+        However, the facilitation of Broadcast, Unknown unicast, and Multicast
+        (BUM) traffic within a LISP-enabled environment, especially when
+        layer 2 mobility is a consideration, presents notable challenges.
+        Among these is the efficient forwarding of BUM traffic to the relevant
+        Router Locators (RLOCs) without inducing unicast replication in the underlay network.</t>
+
+        <t>In the current framework, the forwarding of encapsulated BUM traffic
+        within a LISP-based fabric relies heavily on the use of Protocol
+        Independent Multicast - Any Source Multicast (PIM ASM) and associated
+        Rendezvous Points (RPs) within the provider's network. This
+        dependency creates a single point of failure and introduces
+        operational complexities due to the potential need for multiple RPs
+        and the associated maintenance burden.</t>
+
+        <t>This RFC proposes an alternative method aimed at simplifying BUM
+        traffic forwarding by leveraging PIM Source-Specific Multicast (SSM)
+        within LISP-based networks that utilize layer 2 Virtual Network
+        Identifiers (L2VNI). The approach outlined herein delegates the
+        responsibility of multicast source discovery from the provider
+        network's underlay to the LISP control plane itself. By integrating
+        dynamic (S,G) multicast tree creation triggered by LISP control-plane
+        messaging, this solution seeks to reduce the complexity of the
+        provider network's role to ensuring basic unicast reachability
+        between RLOCs and supporting PIM SSM for multicast routing.</t>
+
+        <t>The scope of this RFC is focused exclusively on LISP networks with
+        layer 2 extensions, addressing the specific case of BUM traffic
+        forwarding. The document will detail the mechanisms by which the LISP
+        control plane can manage multicast source discovery and facilitate
+        the establishment of efficient multicast forwarding paths without the
+        need for traditional PIM ASM constructs and Rendezvous Points.</t>
+
+        <t>The intended audience for this RFC includes network architects,
+        engineers, and administrators tasked with managing LISP-based
+        fabrics, particularly those who seek to optimize their networks for
+        layer 2 mobility.</t>
+    </section>
+
+    <section anchor="Requirements-Language">
+      <name>Requirements Language</name>
+        <t>The key words "MUST", "MUST NOT", "REQUIRED", "SHALL",
+        "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT
+        RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be
+        interpreted as described in BCP 14 <xref target="RFC2119"/>
+        <xref target="RFC8174"/> when, and only when, they appear in
+        all capitals, as shown here.</t>
+    </section>
+
+    <section anchor="Definition-Terms">
+      <name>Definition of Terms</name>
+        <t>LISP related terms, notably Map-Request, Map-Reply, Ingress Tunnel
+        Router (ITR), Egress Tunnel Router (ETR), Map-Server (MS) and
+        Map-Resolver (MR) are defined in the LISP specifications <xref
+        target="RFC9300"/> and <xref target="RFC9301"/>.</t>
+
+        <t>Terms defining interactions with the LISP Mapping System are defined
+        in <xref target="RFC9301"/>.</t>
+
+        <t>Terms related to the procedures for signal free multicast are defined
+        in <xref target="RFC8378"/>.</t>
+
+        <t>The following terms are here defined to facilitate the descriptions
+        and discussions within this particular document.</t>
+
+        <t>Site-Overlay - Overlay network at a specific area or domain. This
+        overlay network has a dedicated Mapping System.</t>
+
+        <t>Border-xTR - xTR that connects a site-overlay to one or more
+        uberlays.</t>
+
+        <t>xTR - LISP Tunnel Router as defined in <xref target="RFC9301"/>. An
+        xTR connects end-points to the site-overlay.</t>
+
+        <t>Local Mapping System - Mapping system of the site-overlay</t>
+
+        <t>Uberlay - Overlay network that interconnects different site-overlays
+        to each other. The Uberlay has a dedicated Mapping System and creates an
+        overlay amongst the border xTRs which connect different
+        site-overlays.</t>
+
+        <t>Uberlay Mapping System - Autonomous mapping system dedicated to the
+        uberlay.</t>
+
+        <t>Site-Overlay EIDs - Also referred to as local site-overlay EIDs,
+        these are the EIDs that are connected to xTRs in a particular
+        site-overlay and are registered in their own local site-overlay mapping
+        system. These EIDs will also be registered in the uberlay but not in the
+        remote site-overlay mapping systems.</t>
+
+        <t>Remote site-overlay EIDs - These are EIDs connected and registered in
+        site-overlays other than the local site-overlay.</t>
+
+        <t>Local site-overlay EIDs - These are EIDs connected and registered in
+        the local site-overlay.</t>
+    </section>
+
+    <section anchor="Working-Principles">
+      <name>Working Principles</name>
+        <section anchor="Working-Principles_Prerequisites">
+          <name>Prerequisites</name>
+          <t>Every network devices participating in a common L2VNI MUST use a
+          common PIM SSM group in the RLOC space to transport BUM traffic.</t>
+        </section>
+
+        <section anchor="Working-Principles_First-Node">
+          <name>First network device to join the L2VNI</name>
+          <t>When the first network device joins an L2VNI where BUM is allowed,
+          it MUST register it’s intent to send and receive multicast traffic
+          in the RLOC space for the group that has been assigned to the L2VNI.
+          This is done by sending a LISP Map-Register to the LISP Map Server
+          containing the Layer2 IID, it’s RLOC address and the PIM SSM Group
+          on which the BUM traffic will be mapped. The Map-Server stores a new
+          record in the database and triggers a lookup to select all entries
+          of the table. A Map-Notify containing (L2IID, Vector[list of all RLOCs present in the L2VNI], Multicast Group)
+          MUST be sent to all results of this lookup. In this specific scenario,
+          the first joiner will only see it’s own RLOC address in the vector
+          list and that will serve as a confirmation that it has join the L2VNI.</t>
+        </section>
+
+        <section anchor="Working-Principles_Additional-Node">
+          <name>Additional network devices joining the L2VNI</name>
+          <t>Following the same process described in 3.1, the network device sends
+          a Map-Register to the MS containing the L2IID to join, it’s RLOC 
+          address and the PIM SSM Group for BUM transport. At this point,
+          the Map Server looks up the database for the provided L2IID and founds
+          an existing entry. It adds the new RLOC in the vector list of RLOCs
+          participating to the L2VNI and verifies that the PIM SSM group is matching.
+          It then sends a Map-Notify (L2IID, Vector[All RLOCs in the L2VNI], Multicast Group)
+          to all members of the Vector including the new joiner.</t>
+
+          <t>The new joiner receives a confirmation that it has successfully joined
+          the L2VNI by seeing its RLOC in the Vector. It also discover the list
+          of all other members of the L2VNI and do a lookup in the MRIB to see
+          if a multicast tree already exists to them. Since it is new to the L2VNI,
+          no entries should be present and a PIM SSM Join will be sent towards all
+          the members to receive the encapsulated BUM traffic from them.</t>
+
+          <t>All others members of the L2VNI receiving the Map-Notify will do the
+          same by verifying their own membership. They will also lookup for existing
+          multicast tree entries in their MRIB for all other RLOCs present in
+          the Vector list. Since the new joiner is not present, they will all
+          send a PIM SSM Join to it.</t>
+
+          <t>At this point, a full-mesh of multicast trees should be created between 
+          all members of the L2VNI. This allows BUM traffic transport across
+          a PIM SSM core network.</t>
+        </section>
+
+        <section anchor="Working-Principles_Graceful-leave">
+          <name>Graceful leave operations</name>
+          <t>When removing a network device gracefully from an L2VNI, it MUST send
+          a PIM Leave to all members of the L2VNI. After doing this, a MAP-Register
+          MUST be sent to the MAP SERVER containing (L2IID, it’s RLOC, Multicast Group)
+          plus a TTL=0 to signal that this record has expired. The MAP SERVER deletes
+          the requestor RLOC from Vector list and notifies every one of this change
+          by sending a MAP-NOTIFY with a new vector list. All the other Network Devices
+          compare the vector list to the MRIB and find out that there is an extra entry
+          in the MRIB compared to the Vector list and send a PIM Leave to that RLOC.</t>
+        </section>
+    </section>
+
+    <section anchor="Optimisations">
+      <name>Optimisations</name>
+        <section anchor="Optimisations_Bidir-Trees">
+          <name>Bidirectional multicast trees</name>
+          <t>Depending on the network size, a full mesh of multicast trees
+          (between all the RLOC participating to an L2VNI) can create a
+          huge number of entries in the MRIB. To reduce this amount, it
+          might be beneficial to manipulate the topology to force the
+          multicast traffic to pass through a central point.</t>
+
+          <section anchor="Optimisations_Bidir-Trees_RootNode-Join">
+            <name>A root node is joining an L2VNI</name>
+            <t>Initially, the Map-Server is rejecting any unflagged MAP-Register
+            from network devices willing to join a L2VNI configured with
+            a hub-n-spoke topology. A network device that has been configured
+            as root (TBD) sends a MAP-Register to the Map-Server with a
+            new entry (L2IID, it’s RLOC, Multicast Group) and a special
+            Flag (TBD) that identifies itself as root for the tree. The MS
+            accept the registration and add a new entry to the DB as
+            (L2IID, Vector[RLOC] (with flag set if root), Multicast group).
+            The MS sends a MAP-NOTIFY to all devices in the Vector
+            (only one is currently in the vector). The Root node can validate
+            that it has successfully joined the L2VNI. The MS is now ready to
+            accept registrations from other network devices.</t>
+          </section>
+
+          <section anchor="Optimisations_Bidir-Trees_NonRootNode-Join">
+            <name>Non-root nodes are joining the L2VNI</name>
+            <t>When additional non-root nodes join the L2VNI by sending a
+            (L2IID, their RLOCs, Multicast Group) Map-Register, the MapServer
+            is storing new entries in the Vector of devices participating in
+            the L2VNI. The MapServer then sends MAP-Notify to the nodes with a
+            vector of RLOCs containing the Root node and the respective RLOCs
+            of the joining devices. That means that means that at anytime, a
+            new device joining the L2VNI will receive a list of root nodes plus
+            its own RLOC confirming that it has successfully joined the L2VNI.
+            The Root nodes are also notified that new members are joining the
+            L2VNI through a Map-Notify containing a vector of all non-root RLOCs.</t>
+          </section>
+
+          <section anchor="Optimisations_Bidir-Trees_Tree-Formation">
+            <name>Multicast Tree formation</name>
+            <t>The Root Tree identities the new nodes and issue a PIM SSM Join
+            towards them. The non-root nodes will initiate PIM SSM join the
+            root nodes only. This results is a bi-directionnal multicast tree
+            passing through the root node.</t>
+          </section>
+
+          <section anchor="Optimisations_Bidir-Trees_RootNode-Redundancy">
+            <name>Root node redundancy</name>
+            <t>Since the data traffic is passing through the root nodes it is
+            critical to be able to provide redundancy to those nodes.
+            If more than one root node has been registered in the L2VNI, the
+            locator priority will be used to determined which one will receive
+            the PIM Joins from the non-root nodes. The secondary root node will
+            track the reachability of the primary root node in the RIB. When the
+            primary node fails, the IGP will remove the RLOC for the RIB and
+            make the LISP next-hop unreachable. This will trigger a new PIM
+            Join to the secondary root node. At this point, the secondary root
+            node will also detect that the primary root node is unavailable
+            and will elect itself as the new primary root node. As candidate
+            root node, it has also received a Vector of non-root nodes participating
+            to the L2VNI and will trigger PIM SSM Joins towards them.
+            The bidirectional multicast tree is rebuilt and BUM forwarding
+            is restored. To prevent any interruptions by misconfigured root-nodes
+            or failed primary root node coming back online, no pre-empt should
+            be done when a new root node with a higher priority is added in the network.</t>
+          </section>
+        </section>
+
+        <section anchor="Optimisations_Traffic-Steering">
+          <name>Traffic Steering</name>
+          <t>In some situations, BUM transport is only required for IPv4 ARP
+          and DHCP services to a gateway located outside of the fabric network.
+          Such services require unidirectional BUM transport
+          (ARP request and DHCP Discover) and the return traffic is unicast
+          (ARP reply and DHCP Offer/Request/Ack). If the PxTR connected
+          to the external gateway it should also be able to be configured
+          as unidirectional root node for the L2VNI. That means that it should
+          be able to receive BUM traffic from other non-root nodes and forward
+          it outside of the fabric.</t>
+
+          <section anchor="Optimisations_Traffic-Steering_Unidir-RootNode-Join">
+            <name>A unidirectional root node is joining the L2VNI</name>
+            <t>Similarly to <xref target="Optimisations_Bidir-Trees"/>, until the first root node is discovered the Map-Server
+            will reject any other MAP-REGISTER. When a root node is configured to act
+            as a unidirectional root node, it sends a MAP-REGISTER to the MAP-SERVER
+            (L2IID, RLOC, Multicast Group) with two Flags (Root, Unidirectional).
+            At this point, the MAP-Server is ready to receive non-root node MAP-Registers.</t>
+          </section>
+
+          <section anchor="Optimisations_Traffic-Steering_NonRootNode-Join">
+            <name>Non-root nodes are joining the L2VNI</name>
+            <t>When additional non-root nodes joins the L2VNI by sending
+            a MAP-REGISTER (L2IID, RLOC, Multicast Group), the MS creates
+            new entries in the DB. The MS sends a MAP-Notify back to the
+            non-root nodes with their respective RLOC in the vector
+            (like if they were the only node in the topology). The MS also
+            sends a MAP-NOTIFY to the unidirectional root node with the
+            list of new nodes in the topology.</t>
+          </section>
+
+          <section anchor="Optimisations_Traffic-Steering_Tree-Formation">
+            <name>Multicast Tree formation</name>
+            <t>After being notified by the MS, the unidirectional root node will
+            initiate a PIM SSM Join towards the new non-root nodes to receive
+            encapsulated BUM traffic from them. The non-root nodes are not aware
+            of other nodes in the topology and will not initiate any PIM SSM join.
+            This result of this is a unidirectional multicast tree where the
+            xTR can send encapsulated BUM traffic to the PxTR. Since the return
+            traffic is unicast, there is no needs to maintain multicast state
+            in the underlay on non-root nodes.</t>
+          </section>
+
+          <section anchor="Optimisations_Traffic-Steering_RootNode-Redundancy">
+            <name>Redundancy</name>
+            <t>There are two parts that come into play when considering the redundancy
+            of unidirectional root-nodes. The first part relates to the point <xref target="Optimisations_Bidir-Trees_RootNode-Redundancy"/>
+            which remains almost the same except that the
+            non-root nodes will not care about the switchover to another root node.
+            When the primary root node fails, the secondary will detect it and issue
+            a PIM SSM Join towards all the non-root to recreate a new multicast tree. </t>
+          </section>
+
+          <section anchor="Optimisations_Traffic-Steering_RootNode-Types-Exclusion">
+            <name>Coexistence with bidirectional root nodes</name>
+            <t>Both types of root nodes (unidirectional and bidirectional)
+            MUST NOT coexist in a given L2VNI.</t>
+          </section>
+        </section>
+    </section>
+
+    <section anchor="IANA">
+      <name>IANA Considerations</name>
+      <t>This memo includes no request to IANA.</t>
+    </section>
+    
+    <section anchor="Security">
+      <name>Security Considerations</name>
+      <t>This document should not affect the security of the Internet.</t>
+    </section>
+  </middle>
+
+  <back>
+    <references>
+      <name>References</name>
+      <references>
+        <name>Normative References</name>
+          <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.2119.xml"/>
+          <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8174.xml"/>
+      </references>
+ 
+      <references>
+        <name>Informative References</name>
+          <xi:include href="http://xml.resource.org/public/rfc/bibxml/reference.RFC.9300.xml"/>
+          <xi:include href="http://xml.resource.org/public/rfc/bibxml/reference.RFC.9301.xml"/>
+          <xi:include href="http://xml.resource.org/public/rfc/bibxml/reference.RFC.8378.xml"/>
+          <xi:include href="http://xml.resource.org/public/rfc/bibxml3/reference.I-D.draft-ietf-lisp-eid-mobility-15.xml"/>
+      </references>
+    </references>
+    
+    <section anchor="Acknowledgements" numbered="false">
+      <name>Acknowledgements</name>
+      <t>The authors want to thank Marc Portoles-Comeras and Alberto Rodriguez-Natal
+        for their insightful contribution to shaping the ideas in this
+        document.</t>
+    </section>
+ </back>
+</rfc>
