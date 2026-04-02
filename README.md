@@ -1,4 +1,4 @@
-# IETF Locator/Identity Separation Protocol Drafts
+# IETF Drafts on LISP (Locator/Identity Separation Protocol)
 
 This repo holds some IETF drafts that I'm maintaining :
 
